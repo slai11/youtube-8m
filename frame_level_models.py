@@ -15,12 +15,12 @@
 """Contains a collection of models which operate on variable-length sequences.
 """
 import math
-
+import pdb
 import models
 import video_level_models
 import tensorflow as tf
 import model_utils as utils
-
+from tensorflow import logging
 import tensorflow.contrib.slim as slim
 from tensorflow import flags
 
@@ -229,8 +229,75 @@ class LstmModel(models.BaseModel):
 
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
-
+    #print(outputs)
+    pdb.set_trace()
     return aggregated_model().create_model(
         model_input=state[-1].h,
         vocab_size=vocab_size,
         **unused_params)
+
+class TestModel(models.BaseModel):
+  """Test class
+  all models take in 
+  1. input tensor, 3d, [-1, 300, 1024]
+  2. number of classes
+  3. number of frames (max) - 300
+
+  output
+  dictionary. key: 'prediction', value: train_op
+    try to wrap with tf.Prints
+  """
+  def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+    """Bidirectional RNN
+    outputs aggregated model (input is sum of 2 cells)
+    """
+    lstm_size = FLAGS.lstm_cells
+    number_of_layers=FLAGS.lstm_layers
+    
+    forward_stacked_lstm = tf.contrib.rnn.MultiRNNCell(
+          [tf.contrib.rnn.BasicLSTMCell(
+              lstm_size, forget_bias=1.0)
+              for _ in range(number_of_layers)
+              ])
+    backward_stacked_lstm = tf.contrib.rnn.MultiRNNCell(
+          [tf.contrib.rnn.BasicLSTMCell(
+              lstm_size, forget_bias=1.0)
+              for _ in range(number_of_layers)
+              ])
+
+    loss = 0.0
+    outputs, state = tf.nn.bidirectional_dynamic_rnn(forward_stacked_lstm, 
+                        backward_stacked_lstm,
+                        model_input, 
+                        sequence_length=num_frames,
+                        dtype=tf.float32)
+    
+    combined_state = tf.add(state[0][-1].h, state[-1][-1].h)
+    combined_state = tf.Print(combined_state, [tf.shape(combined_state)], 'combined=', summarize=10)
+    
+    aggregated_model = getattr(video_level_models, FLAGS.video_level_classifier_model)
+    
+    # combine the two states here using a softmax or something
+    return aggregated_model().create_model(
+                      model_input=combined_state, 
+                      vocab_size=vocab_size,
+                      **unused_params)
+
+  def template_create_model(self, model_input, vocab_size, num_frames, **unused_params):
+    num_frames=tf.cast(tf.expand_dims(num_frames,1), tf.float32)
+    feature_size = model_input.get_shape().as_list()[2]
+    
+    denominator = tf.reshape(tf.tile(num_frames, [1, feature_size]), [-1, feature_size])
+    avg_pooled = tf.reduce_sum(model_input, axis=[1]) / denominator
+
+    output = slim.fully_connected(avg_pooled, vocab_size, activation_fn=tf.nn.sigmoid, 
+        weights_regularizer=slim.l2_regularizer(1e-8))
+
+    # debug stuf
+    output = tf.Print(output, [output[0]], 'argmax(out)=', summarize=20, first_n=10)
+
+    assert_op = tf.Assert(tf.less_equal(tf.reduce_max(output), 100), [1213], name='assert_test') 
+    with tf.control_dependencies([assert_op]):
+      output = tf.identity(output, name='output')
+    
+    return {'predictions': output}
