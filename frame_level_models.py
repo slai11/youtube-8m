@@ -222,15 +222,14 @@ class LstmModel(models.BaseModel):
                 ])
 
     loss = 0.0
-
+    
     outputs, state = tf.nn.dynamic_rnn(stacked_lstm, model_input,
                                        sequence_length=num_frames,
                                        dtype=tf.float32)
 
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
-    #print(outputs)
-    pdb.set_trace()
+    
     return aggregated_model().create_model(
         model_input=state[-1].h,
         vocab_size=vocab_size,
@@ -249,7 +248,9 @@ class TestModel(models.BaseModel):
   """
   def create_model(self, model_input, vocab_size, num_frames, **unused_params):
     """Bidirectional RNN
-    outputs aggregated model (input is sum of 2 cells)
+    y_t = softmax(W_y(hf_t + hb_t) + b_y)
+    t = timestep
+    y = feature
     """
     lstm_size = FLAGS.lstm_cells
     number_of_layers=FLAGS.lstm_layers
@@ -273,13 +274,16 @@ class TestModel(models.BaseModel):
                         dtype=tf.float32)
     
     combined_state = tf.add(state[0][-1].h, state[-1][-1].h)
-    combined_state = tf.Print(combined_state, [tf.shape(combined_state)], 'combined=', summarize=10)
+    bi_weights = tf.get_variable("bi_weights", [1024, 512], initializer=tf.random_normal_initializer(stddev=0.1))
+    bi_bias = tf.get_variable("bi_bias", [512], initializer=tf.random_normal_initializer(stddev=0.1))
+    softmax = tf.nn.softmax(tf.matmul(combined_state, bi_weights) + bi_bias)
+    
+    #combined_state = tf.Print(combined_state, [tf.shape(combined_state)], 'combined=', summarize=10)
     
     aggregated_model = getattr(video_level_models, FLAGS.video_level_classifier_model)
     
-    # combine the two states here using a softmax or something
     return aggregated_model().create_model(
-                      model_input=combined_state, 
+                      model_input=softmax, 
                       vocab_size=vocab_size,
                       **unused_params)
 
