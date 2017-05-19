@@ -316,20 +316,70 @@ class DilatedConvolutionModel(models.BaseModel):
     x layers of dilated conv
     other stuff??
     """
-    pass
+    self._define_variables()
+
+    # causal layer
+    z = self._causal_conv(model_input, self.var.get('causal_dilate'), dilation=1)
+
+    # dilation stack
+    skip = 0
+    num_of_blocks=2
+    for i in range(num_of_blocks):
+      for dil in [1,2,4,6]:
+        z, s = self.res_block(z, dil, i)
+        skip += s
+
+    skip = tf.Print(skip, [tf.shape(skip)], 'OUTPUT TO AGG = ')
+    
+    # fully connected into softmax
+    return LstmModel().create_model(skip, vocab_size, num_frames , **unused_params)
+
+   
+
   
+  def res_block(self, input_tensor, dilation, block_number):
+    """performs dilated conv and gating + skip connection
+    """
+    with tf.name_scope('res_block_{}_{}'.format(block_number, dilation)):
+      gate_output = self._causal_conv(input_tensor, self.var.get('dilate_gate_1'), dilation)
+      filter_output = self._causal_conv(input_tensor, self.var.get('dilate_filter_1'), dilation)
+
+      joined = tf.tanh(filter_output) * tf.sigmoid(gate_output)
+      
+      out = tf.nn.conv1d(joined, self.var.get('dilate_output_1'), stride=1, padding='SAME')
+
+      residual = input_tensor + out
+      residual = tf.Print(residual, [tf.shape(residual)], 'residual_{}_{} = '.format(block_number, dilation), summarize=10)
+      
+      return residual, out
+
+
+  def _define_variables(self):
+    """TODO
+    define all filters and shit here
+    """
+    self.var = {}
+    with tf.name_scope('causal'):
+      self.var["causal_dilate"] = tf.get_variable('dilate-2', [2, 1024, 512], initializer=tf.random_normal_initializer(stddev=0.1))
+      self.var["dilate_gate_1"] = tf.get_variable('dilate-2-gate', [2, 512, 512], initializer=tf.random_normal_initializer(stddev=0.1))
+      self.var["dilate_filter_1"] = tf.get_variable('dilate-2-filter', [2, 512, 512], initializer=tf.random_normal_initializer(stddev=0.1))
+      self.var["dilate_output_1"] = tf.get_variable('dilate-2-output', [2, 512, 512], initializer=tf.random_normal_initializer(stddev=0.1))
+
+
+
+  # Helper Functions
   def _causal_conv(self, value, filter_, dilation, name='causal_conv'):
     with tf.name_scope(name):
       filter_width = tf.shape(filter_)[0]
       if dilation > 1:
-        transformed = time_to_batch()
-        conv = tf.nn.conv1d(transformed, filter_, stride=1, padding='VALID')
-        restored = batch_to_time()
+        transformed = self._time_to_batch(value, dilation)
+        conv = tf.nn.conv1d(transformed, filter_, stride=1, padding='SAME')
+        restored = self._batch_to_time(conv, dilation)
       else:
-        restored = tf.nn.covn1d(value, filter_, stride=1, padding='VALID')
-      
+        restored = tf.nn.conv1d(value, filter_, stride=1, padding='SAME')
       out_width = tf.shape(value)[1] - (filter_width - 1) * dilation
-      result = tf.slice(restored, [0, 0, 0], [-1, out_width, -1]])
+      print(out_width)
+      result = tf.slice(restored, [0, 0, 0], [-1, -1, -1])
       return result
   
   def _time_to_batch(self, value, dilation, name=None):
@@ -340,10 +390,16 @@ class DilatedConvolutionModel(models.BaseModel):
       shape = tf.shape(value)
       pad_elements = dilation - 1 - (shape[1] + dilation - 1) % dilation
       padded = tf.pad(value, [[0,0], [0, pad_elements], [0, 0]])
-      reshaped = tf.reshape(padded, [shape[0], -1, dilation])
-      transposed = tf.transpose(reshaped, [0, 2, 1])
-      return tf.reshape(transposed, [shape[0], shape[1] * dilation, -1])
-
+      reshaped = tf.reshape(padded, [-1, dilation, shape[2]])
+      transposed = tf.transpose(reshaped, [1, 0, 2])
+      return tf.reshape(transposed, [shape[0] * dilation, -1, shape[2]])
+  
+  def _batch_to_time(self, value, dilation, name=None):
+    with tf.name_scope('batch_to_time'):
+      shape = tf.shape(value)
+      prepared = tf.reshape(value, [dilation, -1 ,shape[2]])
+      transposed = tf.transpose(prepared, perm=[1, 0, 2])
+      return tf.reshape(transposed, [tf.div(shape[0], dilation), -1, shape[2]])
 
 
 
