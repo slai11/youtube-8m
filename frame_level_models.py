@@ -229,7 +229,7 @@ class LstmModel(models.BaseModel):
 
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
-    
+    pdb.set_trace()    
     return aggregated_model().create_model(
         model_input=state[-1].h,
         vocab_size=vocab_size,
@@ -276,14 +276,14 @@ class TestModel(models.BaseModel):
     combined_state = tf.add(state[0][-1].h, state[-1][-1].h)
     bi_weights = tf.get_variable("bi_weights", [1024, 512], initializer=tf.random_normal_initializer(stddev=0.1))
     bi_bias = tf.get_variable("bi_bias", [512], initializer=tf.random_normal_initializer(stddev=0.1))
-    softmax = tf.nn.softmax(tf.matmul(combined_state, bi_weights) + bi_bias)
+    #softmax = tf.nn.softmax(tf.matmul(combined_state, bi_weights) + bi_bias)
     
-    #combined_state = tf.Print(combined_state, [tf.shape(combined_state)], 'combined=', summarize=10)
+    combined_state = tf.Print(combined_state, [tf.shape(combined_state)], 'combined=', summarize=10)
     
     aggregated_model = getattr(video_level_models, FLAGS.video_level_classifier_model)
     
     return aggregated_model().create_model(
-                      model_input=softmax, 
+                      model_input=combined_state, 
                       vocab_size=vocab_size,
                       **unused_params)
 
