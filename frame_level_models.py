@@ -305,3 +305,48 @@ class TestModel(models.BaseModel):
       output = tf.identity(output, name='output')
     
     return {'predictions': output}
+
+class DilatedConvolutionModel(models.BaseModel):
+  """
+  Psuedo deepmind
+  """
+  def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+    """
+    1 layer of 1d conv
+    x layers of dilated conv
+    other stuff??
+    """
+    pass
+  
+  def _causal_conv(self, value, filter_, dilation, name='causal_conv'):
+    with tf.name_scope(name):
+      filter_width = tf.shape(filter_)[0]
+      if dilation > 1:
+        transformed = time_to_batch()
+        conv = tf.nn.conv1d(transformed, filter_, stride=1, padding='VALID')
+        restored = batch_to_time()
+      else:
+        restored = tf.nn.covn1d(value, filter_, stride=1, padding='VALID')
+      
+      out_width = tf.shape(value)[1] - (filter_width - 1) * dilation
+      result = tf.slice(restored, [0, 0, 0], [-1, out_width, -1]])
+      return result
+  
+  def _time_to_batch(self, value, dilation, name=None):
+    """value shape [1, 300, 1024] or [num_sample, timesteps, channels]
+    TO VERIFY
+    """
+    with tf.name_scope('time_to_batch'):
+      shape = tf.shape(value)
+      pad_elements = dilation - 1 - (shape[1] + dilation - 1) % dilation
+      padded = tf.pad(value, [[0,0], [0, pad_elements], [0, 0]])
+      reshaped = tf.reshape(padded, [shape[0], -1, dilation])
+      transposed = tf.transpose(reshaped, [0, 2, 1])
+      return tf.reshape(transposed, [shape[0], shape[1] * dilation, -1])
+
+
+
+
+
+
+
