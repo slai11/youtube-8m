@@ -229,7 +229,7 @@ class LstmModel(models.BaseModel):
 
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
-    pdb.set_trace()    
+ 
     return aggregated_model().create_model(
         model_input=state[-1].h,
         vocab_size=vocab_size,
@@ -316,17 +316,22 @@ class DilatedConvolutionModel(models.BaseModel):
     x layers of dilated conv
     other stuff??
     """
+    self.num_of_blocks=2
+    self.dilations = [1,2,4,6,8,16,32]
     self._define_variables()
 
     # causal layer
-    z = self._causal_conv(model_input, self.var.get('causal_dilate'), dilation=1)
+    z = self._causal_conv(model_input, self.var.get('causal_conv'), dilation=1)
 
+    receptive_field = (2-1) * sum(self.dilations) * self.num_of_blocks + 1
+    print(receptive_field)
+    output_width = tf.shape(model_input)[1] - receptive_field + 1
+    
     # dilation stack
     skip = 0
-    num_of_blocks=2
-    for i in range(num_of_blocks):
-      for dil in [1,2,4,6]:
-        z, s = self.res_block(z, dil, i)
+    for i in range(self.num_of_blocks):
+      for dil in self.dilations:
+        z, s = self._res_block(z, dil, i, output_width)
         skip += s
 
     skip = tf.Print(skip, [tf.shape(skip)], 'OUTPUT TO AGG = ')
@@ -337,54 +342,104 @@ class DilatedConvolutionModel(models.BaseModel):
    
 
   
-  def res_block(self, input_tensor, dilation, block_number):
+  def _res_block(self, input_tensor, dilation, block_number, output_width):
     """performs dilated conv and gating + skip connection
+    refer to section 2.4 of deepmind wavenet paper
+    https://arxiv.org/pdf/1609.03499.pdf
     """
     with tf.name_scope('res_block_{}_{}'.format(block_number, dilation)):
-      gate_output = self._causal_conv(input_tensor, self.var.get('dilate_gate_1'), dilation)
-      filter_output = self._causal_conv(input_tensor, self.var.get('dilate_filter_1'), dilation)
+      gate_output = self._causal_conv(input_tensor, 
+                        self.var.get('gate_{}_{}'.format(block_number, dilation)), 
+                        dilation)
+      filter_output = self._causal_conv(input_tensor, 
+                        self.var.get('filter_{}_{}'.format(block_number, dilation)), 
+                        dilation)
 
       joined = tf.tanh(filter_output) * tf.sigmoid(gate_output)
       
-      out = tf.nn.conv1d(joined, self.var.get('dilate_output_1'), stride=1, padding='SAME')
+      out = tf.nn.conv1d(joined, 
+                        self.var.get('output_{}_{}'.format(block_number, dilation)), 
+                        stride=1, 
+                        padding='SAME')
 
-      residual = input_tensor + out
-      residual = tf.Print(residual, [tf.shape(residual)], 'residual_{}_{} = '.format(block_number, dilation), summarize=10)
-      
-      return residual, out
+      # 1x1 conv output
+      transformed = tf.nn.conv1d(out, 
+                                self.var.get('dense_{}_{}'.format(block_number, dilation)), 
+                                stride=1, padding="SAME", name="dense")
+
+      # 1x1 conv skip connection
+      skip_cut = tf.shape(out)[1] - output_width
+      print(skip_cut)
+      out_skip = tf.slice(out, [0, skip_cut, 0], [-1, -1, -1])
+      skip_contrib = tf.nn.conv1d(out_skip, 
+                                self.var.get('skip_{}_{}'.format(block_number, dilation)),
+                                stride=1, padding='SAME', name='skip')
+
+      input_cut = tf.shape(input_tensor)[1] - tf.shape(transformed)[1]
+      input_tensor = tf.slice(input_tensor, [0, input_cut, 0], [-1, -1, -1])
+      # F(x) + x
+      residual = input_tensor + transformed
+      return residual, skip_contrib
 
 
   def _define_variables(self):
-    """TODO
-    define all filters and shit here
+    """define all filters w name scope within a dictionary
     """
     self.var = {}
-    with tf.name_scope('causal'):
-      self.var["causal_dilate"] = tf.get_variable('dilate-2', [2, 1024, 512], initializer=tf.random_normal_initializer(stddev=0.1))
-      self.var["dilate_gate_1"] = tf.get_variable('dilate-2-gate', [2, 512, 512], initializer=tf.random_normal_initializer(stddev=0.1))
-      self.var["dilate_filter_1"] = tf.get_variable('dilate-2-filter', [2, 512, 512], initializer=tf.random_normal_initializer(stddev=0.1))
-      self.var["dilate_output_1"] = tf.get_variable('dilate-2-output', [2, 512, 512], initializer=tf.random_normal_initializer(stddev=0.1))
-
-
+    with tf.name_scope('causal'):     
+      self.var['causal_conv'] = tf.get_variable('causal_conv', 
+                                    [2, 1024, 512], 
+                                    initializer=tf.random_normal_initializer(stddev=0.1))
+      
+    with tf.name_scope('dilate_stack'):
+      for block in range(self.num_of_blocks):
+        for dilation in self.dilations:
+          gate_name = "gate_{}_{}".format(block, dilation)
+          filter_name = "filter_{}_{}".format(block, dilation)
+          output_name = "output_{}_{}".format(block, dilation)
+          skip_name = "skip_{}_{}".format(block, dilation)
+          dense_name = "dense_{}_{}".format(block, dilation)
+         
+          self.var[gate_name] = tf.get_variable(gate_name, 
+                                    [2, 512, 512],
+                                    initializer=tf.random_normal_initializer(stddev=0.1))
+          
+          self.var[filter_name] = tf.get_variable(filter_name,
+                                    [2, 512, 512],
+                                    initializer=tf.random_normal_initializer(stddev=0.1))
+          
+          self.var[output_name] = tf.get_variable(output_name,
+                                    [2, 512, 512],
+                                    initializer=tf.random_normal_initializer(stddev=0.1)) 
+          
+          self.var[skip_name] = tf.get_variable(skip_name, [1, 512, 512],
+                                    initializer=tf.random_normal_initializer(stddev=0.1))
+          
+          self.var[dense_name] = tf.get_variable(dense_name, [1, 512, 512],
+                                    initializer=tf.random_normal_initializer(stddev=0.1))
 
   # Helper Functions
   def _causal_conv(self, value, filter_, dilation, name='causal_conv'):
+    """Performs 1d convolution 
+    """
     with tf.name_scope(name):
       filter_width = tf.shape(filter_)[0]
       if dilation > 1:
         transformed = self._time_to_batch(value, dilation)
-        conv = tf.nn.conv1d(transformed, filter_, stride=1, padding='SAME')
+        #conv = tf.contrib.keras.layers.Conv1D(transformed, filter_, strides=1, padding='causal')
+        conv = tf.nn.conv1d(transformed, filter_, stride=1, padding='VALID')
         restored = self._batch_to_time(conv, dilation)
       else:
-        restored = tf.nn.conv1d(value, filter_, stride=1, padding='SAME')
+        #restored = tf.contrib.keras.layers.Conv1D(value, filter_, strides=1, padding='causal')
+        restored = tf.nn.conv1d(value, filter_, stride=1, padding='VALID')
       out_width = tf.shape(value)[1] - (filter_width - 1) * dilation
-      print(out_width)
-      result = tf.slice(restored, [0, 0, 0], [-1, -1, -1])
+      #print(out_width)
+      result = tf.slice(restored, [0, 0, 0], [-1, out_width, -1])
       return result
   
   def _time_to_batch(self, value, dilation, name=None):
     """value shape [1, 300, 1024] or [num_sample, timesteps, channels]
-    TO VERIFY
+    Convert 3d tensor into dilated form
     """
     with tf.name_scope('time_to_batch'):
       shape = tf.shape(value)
@@ -395,14 +450,12 @@ class DilatedConvolutionModel(models.BaseModel):
       return tf.reshape(transposed, [shape[0] * dilation, -1, shape[2]])
   
   def _batch_to_time(self, value, dilation, name=None):
+    """Convert back to original tensor"""
     with tf.name_scope('batch_to_time'):
       shape = tf.shape(value)
       prepared = tf.reshape(value, [dilation, -1 ,shape[2]])
       transposed = tf.transpose(prepared, perm=[1, 0, 2])
       return tf.reshape(transposed, [tf.div(shape[0], dilation), -1, shape[2]])
-
-
-
 
 
 
