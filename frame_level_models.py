@@ -369,7 +369,8 @@ class DilatedConvolutionModel(models.BaseModel):
 
       # 1x1 conv skip connection
       skip_cut = tf.shape(out)[1] - output_width
-      print(skip_cut)
+      print(type(skip_cut))
+      pdb.set_trace()
       out_skip = tf.slice(out, [0, skip_cut, 0], [-1, -1, -1])
       skip_contrib = tf.nn.conv1d(out_skip, 
                                 self.var.get('skip_{}_{}'.format(block_number, dilation)),
