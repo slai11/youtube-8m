@@ -16,7 +16,7 @@
 import json
 import os
 import time
-
+import pdb
 import eval_util
 import export_model
 import losses
@@ -220,8 +220,9 @@ def build_graph(reader,
 
   local_device_protos = device_lib.list_local_devices()
   gpus = [x.name for x in local_device_protos if x.device_type == 'GPU']
+  
   num_gpus = len(gpus)
-
+  
   if num_gpus > 0:
     logging.info("Using the following GPUs to train: " + str(gpus))
     num_towers = num_gpus
@@ -407,19 +408,24 @@ class Trainer(object):
 
     logging.info("%s: Starting managed session.", task_as_string(self.task))
     with sv.managed_session(target, config=self.config) as sess:
+      #writer = tf.summary.FileWriter('model/', sess.graph)
       try:
         logging.info("%s: Entering training loop.", task_as_string(self.task))
         while (not sv.should_stop()) and (not self.max_steps_reached):
           batch_start_time = time.time()
           _, global_step_val, loss_val, predictions_val, labels_val = sess.run(
               [train_op, global_step, loss, predictions, labels])
+
+          
+
           seconds_per_batch = time.time() - batch_start_time
           examples_per_second = labels_val.shape[0] / seconds_per_batch
-
+          
           if self.max_steps and self.max_steps <= global_step_val:
+            logging("MAX STEP REACHED")
             self.max_steps_reached = True
 
-          if self.is_master and global_step_val % 10 == 0 and self.train_dir:
+          if self.is_master and global_step_val % 5 == 0 and self.train_dir:
             eval_start_time = time.time()
             hit_at_one = eval_util.calculate_hit_at_one(predictions_val, labels_val)
             perr = eval_util.calculate_precision_at_equal_recall_rate(predictions_val,
@@ -451,12 +457,15 @@ class Trainer(object):
                  >= self.export_model_steps))
 
             if self.is_master and time_to_export:
+              logging.info("Saving a file now at {}".format(global_step_val))
               self.export_model(global_step_val, sv.saver, sv.save_path, sess)
               self.last_model_export_step = global_step_val
           else:
             logging.info("training step " + str(global_step_val) + " | Loss: " +
               ("%.2f" % loss_val) + " Examples/sec: " + ("%.2f" % examples_per_second))
-      except tf.errors.OutOfRangeError:
+      except tf.errors.OutOfRangeError as e:
+        print(e)
+        #pdb.set_trace()
         logging.info("%s: Done training -- epoch limit reached.",
                      task_as_string(self.task))
 
