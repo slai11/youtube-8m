@@ -46,6 +46,7 @@ flags.DEFINE_string("video_level_classifier_model", "MoeModel",
                     "classifier layer")
 flags.DEFINE_integer("lstm_cells", 1024, "Number of LSTM cells.")
 flags.DEFINE_integer("lstm_layers", 2, "Number of LSTM layers.")
+flags.DEFINE_bool("training", True, "For controlling batch norm layer")
 
 class FrameLevelLogisticModel(models.BaseModel):
 
@@ -530,6 +531,9 @@ class DCModel(models.BaseModel):
 class RDCModel(models.BaseModel):
   """
   Psuedo deepmind
+  instead of using sum of skip connections, model tries to use residuals 
+
+  TODO: include batch normalization
   """
   def create_model(self, model_input, vocab_size, num_frames, **unused_params):
     """
@@ -553,18 +557,16 @@ class RDCModel(models.BaseModel):
 
     # causal layer
     z = self._causal_conv(model_input, self.var.get('causal_conv'), dilation=1)
+    #TODO max pool 
 
     receptive_field = (2-1) * sum(self.dilations) * self.num_of_blocks + 1
     output_width = tf.shape(model_input)[1] - receptive_field + 1
     
     # dilation stack
     with tf.name_scope('dilated_stack'):
-      #skip = 0
       for i in range(self.num_of_blocks):
         for dil in self.dilations:
-          #with tf.name_scope('layer_{}_{}'.format(i, dil)):
           z, s = self._res_block(z, dil, i, output_width)
-            #skip += s
 
     # post-skip 1d convolutions
     with tf.name_scope('post_processing'):
@@ -574,15 +576,9 @@ class RDCModel(models.BaseModel):
     
       transformed2 = tf.nn.relu(conv1)
       conv2 = tf.nn.conv1d(transformed2, self.var.get("conv2"), stride=1, padding="SAME")
-      conv2 = tf.add(conv2, self.var.get('bias2'))
-      #conv2 = tf.Print(conv2, [conv2], 'cov2shape = ')
-    
-      # average pool over 60 timesteps
-      avg2 = tf.reduce_max(conv2, axis=1)
-      #avg2 = tf.Print(avg2, [avg2], 'avg')
-      #proba = tf.cast(tf.nn.softmax(avg2), tf.float32)
+      conv2 = tf.add(conv2, self.var.get('bias2'))    
+      avg2 = tf.reduce_mean(conv2, axis=1)
 
-    #return {"predictions": proba} 
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
     return aggregated_model().create_model(
@@ -615,6 +611,16 @@ class RDCModel(models.BaseModel):
       filter_bias = self.var.get('filter_bias_{}_{}'.format(block_number, dilation))
       gate_output = tf.add(gate_output, gate_bias)
       filter_output = tf.add(filter_output, filter_bias)
+
+      gate_output = tf.contrib.layers.batch_norm(gate_output, 
+                        center=True, scale=True,
+                        is_training=FLAGS.training,
+                        scope='bn_gate_{}_{}'.format(block_number, dilation))
+      
+      filter_output = tf.contrib.layers.batch_norm(filter_output, 
+                        center=True, scale=True,
+                        is_training=FLAGS.training,
+                        scope='bn_filter_{}_{}'.format(block_number, dilation))
 
       joined = tf.tanh(filter_output) * tf.sigmoid(gate_output)
 
@@ -680,7 +686,10 @@ class RDCModel(models.BaseModel):
                                                   
               self.var[dense_name] = tf.get_variable(dense_name, [1, 512, 512],
                                         initializer=tf.contrib.layers.xavier_initializer())
-                                        
+              
+              # adding to track in tb
+              #tf.summary.histogram(gatename, self.var.get(gatename))
+              
               # add biases
               gate_bias = "gate_bias_{}_{}".format(block, dilation)
               filter_bias = "filter_bias_{}_{}".format(block, dilation)
@@ -704,13 +713,13 @@ class RDCModel(models.BaseModel):
         self.var['conv1'] = tf.get_variable('conv1', [1, 512, 512], 
                 initializer=tf.contrib.layers.xavier_initializer())
                 
-        self.var['conv2'] = tf.get_variable('conv2', [1, 512, 4716],
+        self.var['conv2'] = tf.get_variable('conv2', [1, 512, 256],
                 initializer=tf.contrib.layers.xavier_initializer())
 
         self.var['bias1'] = tf.get_variable('bias1', [512],
                 initializer=tf.contrib.layers.xavier_initializer())
 
-        self.var['bias2'] = tf.get_variable('bias2', [4716],
+        self.var['bias2'] = tf.get_variable('bias2', [256],
                 initializer=tf.contrib.layers.xavier_initializer())
                 
 
@@ -763,4 +772,4 @@ class RDCModel(models.BaseModel):
       transposed = tf.transpose(prepared, perm=[1, 0, 2])
       return tf.reshape(transposed, [tf.div(shape[0], dilation), -1, shape[2]])
 
-
+# add in temporal transformer?
