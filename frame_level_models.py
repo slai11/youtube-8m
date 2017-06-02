@@ -338,20 +338,18 @@ class DCModel(models.BaseModel):
       transformed2 = tf.nn.relu(conv1)
       conv2 = tf.nn.conv1d(transformed2, self.var.get("conv2"), stride=1, padding="SAME")
       conv2 = tf.add(conv2, self.var.get('bias2'))
-      #conv2 = tf.Print(conv2, [conv2], 'cov2shape = ')
     
       # average pool over 60 timesteps
       avg2 = tf.reduce_max(conv2, axis=1)
-      #avg2 = tf.Print(avg2, [avg2], 'avg')
-      proba = tf.cast(tf.nn.softmax(avg2), tf.float32)
+      #proba = tf.cast(tf.nn.softmax(avg2), tf.float32)
 
-    return {"predictions": proba} 
-    #aggregated_model = getattr(video_level_models,
-    #                           FLAGS.video_level_classifier_model)
-    #return aggregated_model().create_model(
-    #    model_input=conv2,
-    #    vocab_size=vocab_size,
-    #    **unused_params)
+    #return {"predictions": proba} 
+    aggregated_model = getattr(video_level_models,
+                               FLAGS.video_level_classifier_model)
+    return aggregated_model().create_model(
+        model_input=avg2,
+        vocab_size=vocab_size,
+        **unused_params)
 
   
   def _res_block(self, input_tensor, dilation, block_number, output_width):
