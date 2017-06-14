@@ -1,6 +1,7 @@
+import pdb
 import tensorflow as tf
 
-def transformer(U, theta, out_size, name):
+def transformer(U, theta, out_size, name='tt'):
   """Temporal transformer
 
   Attempts to perform temporal localisation on temporal/sequential data
@@ -9,7 +10,7 @@ def transformer(U, theta, out_size, name):
   Reference
   ---------
   [1] https://github.com/tensorflow/models/blob/master/transformer/spatial_transformer.py
-  [2] Spatial Transformer Network 
+  [2] Spatial Transformer Network
       Max Jaberberg, Karen Simonyan, Andrew Zisserman, Koray Kavukcuoglu
       Google Deepmind
       https://arxiv.org/pdf/1506.02025.pdf
@@ -20,11 +21,11 @@ def transformer(U, theta, out_size, name):
 
 
   def _repeat(x, n_repeats):
-    with variable_scope('repeat'):
+    with tf.variable_scope('repeat'):
       rep = tf.transpose(
-              tf.expand_dims(tf.ones(shape=tf.stack([n_repeats,])),1 )[1,0])
+              tf.expand_dims(tf.ones(shape=tf.stack([n_repeats,])),1), [1,0])
       rep = tf.cast(rep, 'int32')
-      x = tf.matmul(tf.reshape(x, (-1,1)), rep)
+      x = tf.matmul(tf.reshape(x, (-1, 1)), rep)
       return tf.reshape(x, [-1])
 
 
@@ -36,11 +37,11 @@ def transformer(U, theta, out_size, name):
 
       x = tf.cast(x, 'float32')
       timestep_f = tf.cast(timestep, 'float32')
-      zero = tf.zero([], dtype='int32')
+      zero = tf.zeros([], dtype='int32')
       max_timestep = tf.cast(timestep-1, 'int32')
 
       #scale indices from [-1,1] to [0, timesteps]
-      x = (x+1) * timestep - f / 2.0
+      x = (x+1) * timestep_f / 2.0
 
       #sample
       x0 = tf.cast(tf.floor(x), 'int32')
@@ -53,21 +54,21 @@ def transformer(U, theta, out_size, name):
       idx_a = base + x0
       idx_b = base + x1
 
-      x_flat = tf.reshape(x, tf.stack([-1, channel]))
-      x_flat = tf.cast(x_flat, 'float32')
-      Ia = tf.gather(x, idx_a)
-      Ib = tf.gather(x, idx_b)
+      seq_flat = tf.reshape(seq, tf.stack([-1, channel]))
+      seq_flat = tf.cast(seq_flat, 'float32')
+      Ia = tf.gather(seq_flat, idx_a)
+      Ib = tf.gather(seq_flat, idx_b)
 
       x0_f = tf.cast(x0, 'float32')
       x1_f = tf.cast(x1, 'float32')
       wa = tf.expand_dims((x1_f-x), 1)
       wb = tf.expand_dims((x0_f-x), 1)
       output = tf.add_n([wa*Ia, wb*Ib])
-      
-      return output
- 
 
-  def _tranform(seq, theta, out_size):
+      return output
+
+
+  def _transform(seq, theta, out_size):
     with tf.variable_scope('_transform'):
       num_batch = tf.shape(seq)[0]
       timestep = tf.shape(seq)[1]
@@ -96,11 +97,11 @@ def transformer(U, theta, out_size, name):
     """
     gets the (x, 1) grid to be multiplied w theta transform
     """
-    x_t = tf.expan_dims(tf.linspace(-1, 1, out_size), 1)
+    x_t = tf.expand_dims(tf.linspace(-1.0, 1.0, out_size), 1)
     ones = tf.ones_like(x_t)
     grid = tf.concat(axis=0, values=[x_t, ones])
     return grid
 
-  with variable_scope(name):
+  with tf.variable_scope(name):
     output = _transform(U, theta, out_size)
     return output
