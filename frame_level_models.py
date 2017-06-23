@@ -280,7 +280,7 @@ class BiLstmModel(models.BaseModel):
 
     combined_state = tf.add(state[0][-1].h, state[-1][-1].h)
     bi_weights = tf.get_variable("bi_weights", [1024, 512],
-            initializer=tf.random_normal_initializer(stddev=0.1))
+            initializer=tf.contrib.layers.xavier_initializer())
     bi_bias = tf.get_variable("bi_bias", [512],
             initializer=tf.random_normal_initializer(stddev=0.1))
     softmax = tf.nn.softmax(tf.matmul(combined_state, bi_weights) + bi_bias)
@@ -555,7 +555,7 @@ class RDCModel(models.BaseModel):
     self.batch_norm=True
     self.pp_batch_norm=False
     self.filter_width=3# 2
-    self.num_of_blocks=4 #5
+    self.num_of_blocks=1#4 #5
     self.dilations = [2,4,8,16] #TODO 1,2,4,8,16,32
     self._define_variables()
 
@@ -572,7 +572,7 @@ class RDCModel(models.BaseModel):
         for dil in self.dilations:
           z = self._res_block(z, dil, i, output_width)
 
-    #z = tf.Print(z, [z])
+    z = tf.Print(z, [tf.shape(z)])
     # post-skip 1d convolutions
     with tf.name_scope('post_processing'):
       if self.pp_batch_norm:
@@ -597,14 +597,15 @@ class RDCModel(models.BaseModel):
       transformed2 = tf.nn.relu(bn2)
       conv2 = tf.nn.conv1d(transformed2, self.var.get("conv2"), stride=1, padding="SAME")
       conv2 = tf.add(conv2, self.var.get('bias2'))
-      avg2 = tf.reduce_mean(conv2, axis=1)
+      #avg2 = tf.reduce_mean(conv2, axis=1)
 
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
-    return aggregated_model().create_model(
-        model_input=avg2,
-        vocab_size=vocab_size,
-        **unused_params)
+    return LstmModel().create_model(conv2, vocab_size, num_frames, **unused_params)
+    #return aggregated_model().create_model(
+    #    model_input=avg2,
+    #    vocab_size=vocab_size,
+    #    **unused_params)
 
 
   def _res_block(self, input_tensor, dilation, block_number, output_width):
@@ -1074,9 +1075,6 @@ class WavenetModel(models.BaseModel):
       transposed = tf.transpose(prepared, perm=[1, 0, 2])
       return tf.reshape(transposed, [tf.div(shape[0], dilation), -1, shape[2]])
 
-# add in temporal transformer?
-
-
 class TTNModel(models.BaseModel):
   """Test out the temporal stuff
       """
@@ -1133,30 +1131,289 @@ class TTNModel(models.BaseModel):
       fc = tf.nn.relu(tf.matmul(prefc, W_fc_2) + b_fc_2)
       out_size=90
 
-      #with tf.variable_scope('temporal_transformer'):
-      #    x = tf.reshape(model_input,[-1,300*1024])
-      #    out_size = 90
-      #    W_fc_loc1 = tf.get_variable('locnet_w1',[307200, 1000],
-      #                        initializer=tf.contrib.layers.xavier_initializer())
-      #    b_fc_loc1 = tf.get_variable('locnet_b1',[1000],
-      #                        initializer=tf.random_normal_initializer(stddev=1 / math.sqrt(1024)))
-
-      #    W_fc_loc2 = tf.get_variable('locnet_w2',[1000, 2],
-      #                        initializer=tf.contrib.layers.xavier_initializer())
-      #    initial = np.array([1.0,0])
-      #    initial = initial.astype('float32')
-      #    b_fc_loc2 = tf.get_variable('locnet_b2',[2],
-      #                        initializer=tf.random_normal_initializer(stddev=1 / math.sqrt(1024)))
-
-      #h_fc_loc1 = tf.nn.relu(tf.matmul(x, W_fc_loc1) + b_fc_loc1)
-      #h_fc_loc2 = tf.nn.relu(tf.matmul(h_fc_loc1, W_fc_loc2) + b_fc_loc2)
-
       h_trans = transformer(model_input, fc, out_size)
-
+      #h_trans=tf.Print(h_trans, [tf.shape(h_trans)])
       out_size = tf.constant([90])
 
-      return FrameLevelLogisticModel().create_model(
+      h_trans = tf.reshape(h_trans, [-1, 90, 1024])
+      return LstmModel().create_model(
                   h_trans,
                   vocab_size,
-                  out_size,
+                  num_frames,
                   **unused_params)
+
+class testRDCModel(models.BaseModel):
+  """
+  Psuedo deepmind
+  instead of using sum of skip connections, model tries to use residuals
+
+  TODO: include batch normalization
+  """
+  def create_model(self, model_input, vocab_size, num_frames, **unused_params):
+    """
+    1 layer of 1d conv
+    24 layers of dilated conv
+    2 1x1 conv blocks w relu
+    softmax output / throw to MoeModel
+
+    Args:
+      model_input: tf Tensor
+      vocab_size: int, 4716
+      num_frame: int, max number of frames. 300
+
+    Returns:
+      prediction: either from softmax or MoE
+    """
+    self.batch_norm=True
+    self.pp_batch_norm=False
+    self.filter_width=2
+    self.num_of_blocks=4
+    self.dilations = [2,4,8,16,32] #TODO 1,2,4,8,16,32
+    self._define_variables()
+
+    # causal layer
+    z = self._causal_conv(model_input, self.var.get('causal_conv'), dilation=1)
+    #TODO max pool
+
+    receptive_field = (2-1) * sum(self.dilations) * self.num_of_blocks + 1
+    output_width = tf.shape(model_input)[1] - receptive_field + 1
+
+    # dilation stack
+    with tf.name_scope('dilated_stack'):
+      for i in range(self.num_of_blocks):
+        for dil in self.dilations:
+          z = self._res_block(z, dil, i, output_width)
+
+    z = tf.slice(z, [0,0,0], [-1,50,-1])
+    z = tf.nn.pool(z, [5], pooling_type='AVG', padding='VALID', strides=[5])
+
+    # post-skip 1d convolutions
+    with tf.name_scope('post_processing'):
+      if self.pp_batch_norm:
+        bn1 =  tf.contrib.layers.batch_norm(z, 
+                          center=True, scale=True,
+                          is_training=FLAGS.training,
+                          scope='pp_conv1')
+      else:
+        bn1 = z
+      transformed1 = tf.nn.relu(bn1)
+      conv1 = tf.nn.conv1d(transformed1, self.var.get("conv1"), stride=1, padding="SAME")
+      conv1 = tf.add(conv1, self.var.get('bias1'))
+      
+      if self.pp_batch_norm:
+        bn_2 =  tf.contrib.layers.batch_norm(conv1, 
+                          center=True, scale=True,
+                          is_training=FLAGS.training,
+                          scope='pp_conv1')
+      else:
+        bn2 = conv1
+
+      transformed2 = tf.nn.relu(bn2)
+      conv2 = tf.nn.conv1d(transformed2, self.var.get("conv2"), stride=1, padding="SAME")
+      conv2 = tf.add(conv2, self.var.get('bias2'))
+      avg2 = tf.reduce_mean(conv2, axis=1)
+
+    aggregated_model = getattr(video_level_models,
+                               FLAGS.video_level_classifier_model)
+    #return LstmModel().create_model(conv2, vocab_size, num_frames, **unused_params)
+    return aggregated_model().create_model(
+        model_input=avg2,
+        vocab_size=vocab_size,
+        **unused_params)
+
+
+  def _res_block(self, input_tensor, dilation, block_number, output_width):
+    """performs dilated conv and gating + skip connection
+    refer to section 2.4 of deepmind wavenet paper
+    https://arxiv.org/pdf/1609.03499.pdf
+
+    Args:
+      input_tensor: 3d tf tensor
+      dilation: int
+      block_number: int, chunk w dilated layer belongs to
+      output_width: int
+
+    """
+    with tf.name_scope('res_block_{}_{}'.format(block_number, dilation)):
+      gate_output = self._causal_conv(input_tensor,
+                        self.var.get('gate_{}_{}'.format(block_number, dilation)),
+                        dilation)
+      filter_output = self._causal_conv(input_tensor,
+                        self.var.get('filter_{}_{}'.format(block_number, dilation)),
+                        dilation)
+
+      gate_bias = self.var.get('gate_bias_{}_{}'.format(block_number, dilation))
+      filter_bias = self.var.get('filter_bias_{}_{}'.format(block_number, dilation))
+      gate_output = tf.add(gate_output, gate_bias)
+      filter_output = tf.add(filter_output, filter_bias)
+
+      if self.batch_norm:
+        gate_output = tf.contrib.layers.batch_norm(gate_output, 
+                          center=True, scale=True,
+                          is_training=FLAGS.training,
+                          scope='bn_gate_{}_{}'.format(block_number, dilation))
+       
+        filter_output = tf.contrib.layers.batch_norm(filter_output, 
+                          center=True, scale=True,
+                          is_training=FLAGS.training,
+                          scope='bn_filter_{}_{}'.format(block_number, dilation))
+      
+      #joined = tf.tanh(filter_output_bn) * tf.sigmoid(gate_output_bn)
+      joined = tf.tanh(filter_output) * tf.sigmoid(gate_output)
+      # 1x1 conv output
+      transformed = tf.nn.conv1d(joined,
+                                self.var.get('dense_{}_{}'.format(block_number, dilation)),
+                                stride=1, padding="SAME", name="dense")
+
+      # 1x1 conv skip connection
+      #out_skip = tf.slice(joined, [0, 0, 0], [-1, 90, -1])
+      #skip_contrib = tf.nn.conv1d(out_skip,
+      #                          self.var.get('skip_{}_{}'.format(block_number, dilation)),
+      #                          stride=1, padding='SAME', name='skip')
+
+      dense_bias = self.var.get('dense_bias_{}_{}'.format(block_number, dilation))
+      #skip_bias = self.var.get('skip_bias_{}_{}'.format(block_number, dilation))
+      transformed = tf.add(transformed, dense_bias)
+      #skip_contrib = tf.add(skip_contrib, skip_bias)
+
+      input_cut = tf.shape(input_tensor)[1] - tf.shape(transformed)[1]
+      input_tensor = tf.slice(input_tensor, [0, input_cut, 0], [-1, -1, -1])
+      residual = input_tensor + transformed
+
+      return residual#, skip_contrib
+
+
+  def _define_variables(self):
+    """define all filters w name scope within a dictionary
+    gate & filter undergoes sigmoid and tanh -> zero center
+    skip & dense are initialized positive
+    """
+    self.var = {}
+    with tf.variable_scope('wavenet'):
+      with tf.variable_scope('causal'):
+        self.var['causal_conv'] = tf.get_variable('causal_conv',
+                                      [self.filter_width, 1024, 512],
+                                      initializer=tf.contrib.layers.xavier_initializer())
+
+      with tf.variable_scope('dilate_stack'):
+        for block in range(self.num_of_blocks):
+          for dilation in self.dilations:
+            with tf.variable_scope('block_{}_{}'.format(block, dilation)):
+              gate_name = "gate_{}_{}".format(block, dilation)
+              filter_name = "filter_{}_{}".format(block, dilation)
+              #output_name = "output_{}_{}".format(block, dilation)
+              skip_name = "skip_{}_{}".format(block, dilation)
+              dense_name = "dense_{}_{}".format(block, dilation)
+
+              self.var[gate_name] = tf.get_variable(gate_name,
+                                        [self.filter_width, 512, 512],
+                                        initializer=tf.contrib.layers.xavier_initializer())
+
+              self.var[filter_name] = tf.get_variable(filter_name,
+                                        [self.filter_width, 512, 512],
+                                        initializer=tf.contrib.layers.xavier_initializer())
+
+              #self.var[output_name] = tf.get_variable(output_name,
+              #                          [self.filter_width, 512, 512],
+              #                          initializer=tf.random_normal_initializer(stddev=0.01))
+
+              self.var[skip_name] = tf.get_variable(skip_name, [1, 512, 512],
+                                        initializer=tf.contrib.layers.xavier_initializer())
+
+              self.var[dense_name] = tf.get_variable(dense_name, [1, 512, 512],
+                                        initializer=tf.contrib.layers.xavier_initializer())
+
+              # adding to track in tb
+              tf.summary.histogram(gate_name, self.var.get(gate_name))
+              tf.summary.histogram(filter_name, self.var.get(filter_name))
+              tf.summary.histogram(dense_name, self.var.get(dense_name))
+
+              # add biases
+              gate_bias = "gate_bias_{}_{}".format(block, dilation)
+              filter_bias = "filter_bias_{}_{}".format(block, dilation)
+              skip_bias = "skip_bias_{}_{}".format(block, dilation)
+              dense_bias = "dense_bias_{}_{}".format(block, dilation)
+
+              self.var[gate_bias] = tf.get_variable(gate_bias, [512],
+                    initializer=tf.constant_initializer(0.0))
+
+              self.var[filter_bias] = tf.get_variable(filter_bias, [512],
+                    initializer=tf.constant_initializer(0.0))
+
+              self.var[skip_bias] = tf.get_variable(skip_bias, [512],
+                    initializer=tf.constant_initializer(0.1))
+
+              self.var[dense_bias] = tf.get_variable(dense_bias, [512],
+                    initializer=tf.constant_initializer(0.1))
+
+
+      with tf.variable_scope('post_process'):
+        self.var['conv1'] = tf.get_variable('conv1', [1, 512, 512],
+                initializer=tf.contrib.layers.xavier_initializer())
+
+        self.var['conv2'] = tf.get_variable('conv2', [1, 512, 1024],
+                initializer=tf.contrib.layers.xavier_initializer())
+
+        self.var['bias1'] = tf.get_variable('bias1', [512],
+                initializer=tf.contrib.layers.xavier_initializer())
+
+        self.var['bias2'] = tf.get_variable('bias2', [1024],
+                initializer=tf.contrib.layers.xavier_initializer())
+        
+        tf.summary.histogram('conv1', self.var.get('conv1'))
+        tf.summary.histogram('conv2', self.var.get('conv2'))
+        tf.summary.histogram('bias1', self.var.get('bias1'))
+        tf.summary.histogram('bias2', self.var.get('bias2'))
+
+
+
+# Helper Functions
+  def _causal_conv(self, value, filter_, dilation, name='causal_conv'):
+    """Performs 1d convolution
+    
+    For dilated conv, function performs reshaping and un-reshaping to create the
+    dilated effect.
+
+    Args:
+      value: 3d tf tensor
+      filter_: 3d tf variable
+      dilation: int
+      name: string
+    
+    Returns:
+      result: 3d tf tensor
+    """
+    with tf.name_scope(name):
+      filter_width = tf.shape(filter_)[0]
+      if dilation > 1:
+        transformed = self._time_to_batch(value, dilation)
+        conv = tf.nn.conv1d(transformed, filter_, stride=1, padding='VALID')
+        restored = self._batch_to_time(conv, dilation)
+      else:
+        restored = tf.nn.conv1d(value, filter_, stride=1, padding='VALID')
+      
+      out_width = tf.shape(value)[1] - (filter_width - 1) * dilation
+      result = tf.slice(restored, [0, 0, 0], [-1, out_width, -1])
+      return result
+
+  def _time_to_batch(self, value, dilation, name=None):
+    """value shape [1, 300, 1024] or [num_sample, timesteps, channels]
+    Convert 3d tensor into dilated form
+    """
+    with tf.name_scope('time_to_batch'):
+      shape = tf.shape(value)
+      pad_elements = dilation - 1 - (shape[1] + dilation - 1) % dilation
+      padded = tf.pad(value, [[0,0], [0, pad_elements], [0, 0]])
+      reshaped = tf.reshape(padded, [-1, dilation, shape[2]])
+      transposed = tf.transpose(reshaped, [1, 0, 2])
+      return tf.reshape(transposed, [shape[0] * dilation, -1, shape[2]])
+
+  def _batch_to_time(self, value, dilation, name=None):
+    """Convert back to original tensor"""
+    with tf.name_scope('batch_to_time'):
+      shape = tf.shape(value)
+      prepared = tf.reshape(value, [dilation, -1 ,shape[2]])
+      transposed = tf.transpose(prepared, perm=[1, 0, 2])
+      return tf.reshape(transposed, [tf.div(shape[0], dilation), -1, shape[2]])
+
+
