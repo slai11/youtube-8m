@@ -863,8 +863,8 @@ class compressedResWavenetModel(models.BaseModel):
     self.batch_norm=True
     self.pp_batch_norm=False
     self.filter_width=2
-    self.num_of_blocks=2#4
-    self.dilations = [2,4,8,16,32] #TODO 1,2,4,8,16,32
+    self.num_of_blocks=2 #can change this
+    self.dilations = [2,4,8,16,32] 
     self._define_variables()
 
     # causal layer
@@ -985,7 +985,11 @@ class compressedResWavenetModel(models.BaseModel):
     skip & dense are initialized positive
     """
     self.var = {}
+
+    # adjustable variables 
     temp_size = 256
+    output_size = 512
+
     with tf.variable_scope('wavenet'):
       with tf.variable_scope('causal'):
         self.var['causal_conv'] = tf.get_variable('causal_conv',
@@ -1048,13 +1052,13 @@ class compressedResWavenetModel(models.BaseModel):
         self.var['conv1'] = tf.get_variable('conv1', [2, temp_size, temp_size],
                 initializer=tf.contrib.layers.xavier_initializer())
 
-        self.var['conv2'] = tf.get_variable('conv2', [2, temp_size,1024],
+        self.var['conv2'] = tf.get_variable('conv2', [2, temp_size,output_size],
                 initializer=tf.contrib.layers.xavier_initializer())
 
         self.var['bias1'] = tf.get_variable('bias1', [temp_size],
                 initializer=tf.contrib.layers.xavier_initializer())
 
-        self.var['bias2'] = tf.get_variable('bias2', [1024],
+        self.var['bias2'] = tf.get_variable('bias2', [output_size],
                 initializer=tf.contrib.layers.xavier_initializer())
 
         tf.summary.histogram('conv1', self.var.get('conv1'))
