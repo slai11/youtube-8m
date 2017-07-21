@@ -772,10 +772,10 @@ class ResWavenetModel(models.BaseModel):
 
 
       with tf.variable_scope('post_process'):
-        self.var['conv1'] = tf.get_variable('conv1', [2, 512, 512],
+        self.var['conv1'] = tf.get_variable('conv1', [1, 512, 512],
                 initializer=tf.contrib.layers.xavier_initializer())
 
-        self.var['conv2'] = tf.get_variable('conv2', [2, 512, 1024],
+        self.var['conv2'] = tf.get_variable('conv2', [1, 512, 1024],
                 initializer=tf.contrib.layers.xavier_initializer())
 
         self.var['bias1'] = tf.get_variable('bias1', [512],
